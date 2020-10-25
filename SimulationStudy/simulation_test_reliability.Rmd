@@ -1,0 +1,181 @@
+---
+title: 'Appendix: Simulation Study for Validation Experiments'
+author: "Victoria A Ingham, Sara Elg, Sanjay C Nagi and Frank Dondelinger"
+date: "25 October 2020"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE)
+```
+
+## Motivation
+
+We experimentally validated the gene-transcription factor associations detected using the dynamic Bayesian network analysis. Due to resource constraints, it is only possible to validate a small subset of the detected associations. This raises the question of the optimal number of target genes and associations per target gene to investigate to obtain a reasonable estimate of the precision of our detected associations. As we don't have an external validation set, the only way to determine this is via a validation study.
+
+## Simulation Setup
+
+We assume that the mean number of gene regulated by each TF $\mu_{reg}=10$, and the actual number of regulated genes $n_{reg,j}$ for transcription factor $j$ follows a Poisson distribution with mean $\mu_{reg}$. We simulate the true associations directly using a Bernoulli process with parameter $p = n_{reg,j}/n_{targets}$ where $n_{targets}$ is the number of possible target genes for each transcription factor. 
+
+To simulate the predicted associations, we set the rate of true positives (correctly predicted associations) to be 0.75, and the rate of true negatives (correctly predicted non-associations) to be 0.997. This results in an average precision of ~0.6 and an average recall of ~0.72, which seem like reasonably conservative values. Note that because the set of associations is small, and our network model is sparse, we would expect it to be easier to detect a non-association than an association.
+
+We assume that transcription factors and regulated genes to test are selected randomly, and that the qPCR knockdown test is 100% accurate. We simulate 1000 different populations of predicted and true associations for each number of investigated target genes and transcription factors, and compare the estimate of the precision when using the a subset of the transcription factors and genes to the actual precision in our simulated setup. 
+
+```{r,message=FALSE}
+library(tibble)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+```{r}
+# Simulate one estimation and validation experiment
+simulate_validation <- function(num_reg=10,
+                                tp_prob=0.95, tn_prob=0.995, num_tfs=4,
+                                num_pos_genes_per_tf=2, num_neg_genes_per_tf=2,
+                                n_tfs=44, n_targets=1495,
+                                random=FALSE, # random selection of genes to test? 
+                                only_pos=TRUE # If selection of genes is not random, 
+                                              # only test positive associations?
+                                              # If false, select equal numbers positive and 
+                                              # negative assocations.
+                                ) {
+  
+  tp_actual = 0
+  p_actual = 0
+  t_actual = 0
+  
+  tfs_tested = 0
+  tp_estimate = 0
+  p_estimate = 0
+  t_estimate = 0
+  
+  for(i in 1:n_tfs) {
+    prop_reg_tfs = rpois(1, num_reg)/n_targets
+  
+    assoc_true = sample(c(0,1), n_targets, replace=TRUE, 
+                         prob=c(1-prop_reg_tfs, prop_reg_tfs))
+    
+    assoc_pred = sample(c(0,1), n_targets, replace=TRUE, 
+                         prob=c(tn_prob, 1-tn_prob))
+    assoc_pred[assoc_true==1] = sample(c(0,1), sum(assoc_true==1), replace=TRUE, 
+                         prob=c(1-tp_prob, tp_prob))
+    
+    tp_actual = tp_actual + sum(assoc_true==1 & assoc_pred==1)
+    p_actual = p_actual + sum(assoc_pred==1)
+    t_actual = t_actual + sum(assoc_true==1)
+    
+    if(tfs_tested < num_tfs) {
+      if(random) {
+        test_assocs = sample(1:n_targets, num_pos_genes_per_tf+num_neg_genes_per_tf)
+      } else if(only_pos) {
+        if(sum(assoc_pred==1) > 2*num_pos_genes_per_tf) {
+          test_assocs = sample(which(assoc_pred==1), 2*num_pos_genes_per_tf)
+        } else {
+          test_assocs = which(assoc_pred==1)
+        }
+      } else {
+        if(sum(assoc_pred==1) > num_pos_genes_per_tf) {
+          valid_true = sample(which(assoc_pred==1), num_pos_genes_per_tf)
+        } else {
+          valid_true = which(assoc_pred==1)
+        }
+      
+        valid_false = sample(which(assoc_pred==0), num_neg_genes_per_tf)
+        test_assocs = c(valid_true, valid_false)
+      }
+      
+      tp_estimate = tp_estimate + sum(assoc_true[test_assocs]==1 & assoc_pred[test_assocs]==1)
+      p_estimate = p_estimate + sum(assoc_pred[test_assocs]==1)
+      t_estimate = t_estimate + sum(assoc_true[test_assocs]==1)
+      
+      tfs_tested = tfs_tested + 1
+    }
+  }
+  
+  precision_actual = tp_actual / p_actual
+  recall_actual = tp_actual / t_actual
+  
+  precision_estimate = tp_estimate / p_estimate
+  recall_estimate = tp_estimate / t_estimate
+  
+  return(tibble(prec_estimate=precision_estimate, rec_estimate=recall_estimate,
+                prec_actual=precision_actual, rec_actual=recall_actual))
+}
+
+
+```
+
+## Results
+
+```{r}
+set.seed(979060) # Fixed seed for reproducibility
+
+settings = expand.grid(1:10, 1:10)
+
+result_table = tibble()
+
+for(settings_i in 1:dim(settings)[1]) {
+  temp_table = tibble()
+
+  for(rep_i in 1:1000) {
+    result_row = simulate_validation(num_tfs=settings[settings_i,1],
+                      num_pos_genes_per_tf=settings[settings_i,2],
+                      num_neg_genes_per_tf=settings[settings_i,2],
+                      tp_prob=0.75, tn_prob=0.997)
+  
+    temp_table = bind_rows(temp_table, result_row)
+  }
+  
+  temp_table = temp_table %>%
+    mutate(num_tfs=settings[settings_i,1],
+           num_targets=settings[settings_i,2]*2)
+  
+  result_table = bind_rows(result_table, temp_table)
+}
+
+prec_table = result_table %>%
+  select(prec_estimate, prec_actual, num_tfs, num_targets) %>%
+  gather(key='Precision', value='Precision Value', prec_estimate, prec_actual)
+
+rec_table = result_table %>%
+  select(rec_estimate, rec_actual, num_tfs, num_targets) %>%
+  gather(key='Recall', value='Recall Value', rec_estimate, rec_actual)
+  
+```
+
+```{r, fig.cap='Actual and estimated precision for increasing number of transcription factors and target genes. Each plot is labeled with the number of transcription factors tested.', fig.width=10, fig.height=4}
+prec_table %>%
+  mutate(Precision=ifelse(Precision=='prec_actual', 'Actual', 'Estimated')) %>%
+ggplot(aes(y=`Precision Value`, x=as.factor(num_targets), colour=Precision)) +
+  facet_wrap(~num_tfs) +
+  geom_boxplot() +
+  ylab('Precision') +
+  xlab('Number of Target Genes')
+```
+
+We observe that the variance of the estimate of the precision decreases as we test more associations. Figure 1 shows the effect of increasing the number of transcription factors (subsequent plots) and target genes (x-axis within each). This leads us to conclude that in order to get a reliable estimate of the precision, we need at least 5-7 transcription factors with 4 target genes tested for each of them. Figure 2 shows that testing 4 regulatory relationships for 7 transcription factors has a 70% chance of obtaining an estimate of the precision that falls within 10% of the true precision, and a 97% chance of obtaining an estimate that falls within 20% of the true precision. For 5 transcription factors, the chance of obtaining an estimate within 10% of the true precision falls to 61%, and the chance of obtaining an estimate within 20% is 92%.  
+
+```{r, fig.cap='Proportion of simulation runs where the precision estimate falls within the given distance (10% or 20%) of the true preision, for increasing number of transcription factors and target genes. Each plot is labeled with the number of transcription factors tested.', fig.width=10, fig.height=4}
+
+temp = result_table %>%
+  mutate(within_0.1=abs(prec_actual-prec_estimate) < 0.1,
+         within_0.15=abs(prec_actual-prec_estimate) < 0.15,
+         within_0.2=abs(prec_actual-prec_estimate) < 0.2) %>%
+  group_by(num_tfs, num_targets) %>%
+  summarize(`10%`=mean(within_0.1),
+            `20%`=mean(within_0.2)) %>%
+  pivot_longer(names_to='Distance', values_to='Proportion of Simulation Runs', 
+               `10%`:`20%`)
+
+temp %>%
+  ggplot(aes(x=num_targets, y=`Proportion of Simulation Runs`, colour=`Distance`)) +
+  facet_wrap(~num_tfs) +
+  geom_line() +
+  xlab('Number of Target Genes')
+```
