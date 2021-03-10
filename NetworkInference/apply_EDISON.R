@@ -113,7 +113,7 @@ for(i in 1: length(full_names_target)) {
   
   if(circadian_correction) {
     # Add in sine and cosine predictors for cyclical trend
-    pred_vars = c(pred_vars, length(full_names)+1, length(full_names)+1)
+    pred_vars = c(pred_vars, length(full_names)+1, length(full_names)+2)
   }
   
   ## Apply EDISON (two independent runs to check convergence)
